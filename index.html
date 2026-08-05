@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>智策 · A股看盘终端</title>
+<link rel="stylesheet" href="assets/css/app.css">
+</head>
+<body>
+
+<div id="app">
+
+  <!-- ============ 顶栏 ============ -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark">智</div>
+      <div>
+        <div class="brand-name">智策 · A股看盘终端<span class="brand-sub">Quant Terminal</span></div>
+      </div>
+    </div>
+
+    <div class="nav-tabs">
+      <button class="nav-tab active" data-page="market">行情看盘</button>
+      <button class="nav-tab" data-page="screener">智能选股</button>
+    </div>
+
+    <div id="indexBar" style="display:flex;gap:14px;font-size:11.5px;color:var(--text-2)"></div>
+
+    <div class="search-wrap">
+      <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+      <input id="searchInput" class="search-input" type="text" placeholder="搜索代码 / 名称，如 600519 或 茅台" autocomplete="off">
+      <div id="suggest" class="suggest"></div>
+    </div>
+
+    <div class="top-actions">
+      <div class="status-pill">
+        <span id="statusDot" class="status-dot"></span>
+        <span id="statusText">连接中…</span>
+      </div>
+      <button id="btnRefresh" class="btn" title="立即刷新">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v6h-6"/></svg>
+        刷新
+      </button>
+      <button id="btnAuto" class="btn on" title="自动刷新（交易时段每 6 秒）">自动</button>
+      <button id="btnTheme" class="btn" title="切换主题">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- ============ 行情看盘页 ============ -->
+  <section id="page-market" class="page active">
+
+    <!-- 左：榜单 -->
+    <aside class="side-left">
+      <div class="list-tabs">
+        <div class="list-tab active" data-list="watch">自选</div>
+        <div class="list-tab" data-list="gainers">涨幅</div>
+        <div class="list-tab" data-list="losers">跌幅</div>
+        <div class="list-tab" data-list="amount">成交额</div>
+        <div class="list-tab" data-list="turnover">换手</div>
+      </div>
+      <div id="quoteList" class="quote-list"></div>
+      <div class="resizer" id="resizerLeft" title="按住拖动调整榜单宽度"></div>
+    </aside>
+
+    <!-- 中：主图 -->
+    <main class="center">
+      <div class="stock-head">
+        <div class="sh-title">
+          <div class="sh-name">
+            <span id="shName">--</span>
+            <span class="sh-code" id="shCode">------</span>
+            <span class="sh-tag" id="shBoard">--</span>
+          </div>
+          <div class="sh-price-row">
+            <span class="sh-price num" id="shPrice">--</span>
+            <span class="sh-chg num" id="shChg">--</span>
+            <span class="sh-chg num" id="shChgPct">--</span>
+          </div>
+        </div>
+        <div class="sh-metrics num" id="shMetrics"></div>
+      </div>
+
+      <div class="chart-toolbar">
+        <div class="seg" id="segPeriod">
+          <button class="seg-btn active" data-klt="0">分时</button>
+          <button class="seg-btn" data-klt="101">日K</button>
+          <button class="seg-btn" data-klt="102">周K</button>
+          <button class="seg-btn" data-klt="103">月K</button>
+          <button class="seg-btn" data-klt="5">5分</button>
+          <button class="seg-btn" data-klt="15">15分</button>
+          <button class="seg-btn" data-klt="30">30分</button>
+          <button class="seg-btn" data-klt="60">60分</button>
+          <button class="seg-btn" data-klt="120" title="2小时K线">2时</button>
+          <button class="seg-btn" data-klt="240" title="4小时K线">4时</button>
+        </div>
+        <span class="tb-label">主图</span>
+        <div class="seg" id="segOverlay">
+          <button class="seg-btn active" data-ov="ma">均线</button>
+          <button class="seg-btn" data-ov="boll">BOLL</button>
+          <button class="seg-btn" data-ov="none">裸K</button>
+          <button class="seg-btn" data-ov="avk">平均K</button>
+        </div>
+        <span class="tb-label">副图</span>
+        <div class="seg" id="segSub">
+          <button class="seg-btn active" data-sub="macd">MACD</button>
+          <button class="seg-btn" data-sub="kdj">KDJ</button>
+          <button class="seg-btn" data-sub="rsi">RSI</button>
+          <button class="seg-btn" data-sub="avk">平均K</button>
+          <button class="seg-btn" data-sub="vol">仅量</button>
+        </div>
+        <button id="btnSubClose" class="seg-close show" title="关闭副图指标">✕</button>
+        <button id="btnVline" class="seg-close show active" title="竖参考线（可拖拽左右移动）">▮</button>
+        <button id="btnWatch" class="btn btn-sm" style="margin-left:auto">☆ 加自选</button>
+        <span class="tb-label" id="updateTime">--</span>
+      </div>
+
+      <div class="chart-area">
+        <div id="mainChart"></div>
+        <div id="chartLoading" class="chart-loading"><div class="spinner"></div></div>
+      </div>
+    </main>
+
+    <!-- 右：盘口 -->
+    <aside class="side-right">
+      <div class="card">
+        <div class="card-title">五档盘口</div>
+        <div id="orderBook"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">实时指标</div>
+        <div id="rtMetrics" class="num"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">估值 / 规模</div>
+        <div id="valMetrics" class="num"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">技术诊断</div>
+        <div id="techPanel" style="font-size:12px;color:var(--text-3)">切换到日K后自动计算</div>
+      </div>
+    </aside>
+  </section>
+
+  <!-- ============ 智能选股页 ============ -->
+  <section id="page-screener" class="page">
+    <div class="screener">
+
+      <div class="scr-top">
+        <div class="scr-sec-title">
+          策略模板
+          <span class="lock-hint">已锁定：沪深主板 · 散户可直接交易（自动剔除科创板 688 / 创业板 300·301 / 北交所 / ST）</span>
+        </div>
+        <div class="strategy-grid" id="strategyGrid"></div>
+
+        <div class="scr-sec-title">自定义条件（留空 = 不限）</div>
+        <div class="filter-grid" id="filterGrid">
+          <div class="fl"><span class="fl-label">股价</span><input class="fl-in num" id="f_priceMin" type="number" placeholder="最低"><span class="fl-tilde">~</span><input class="fl-in num" id="f_priceMax" type="number" placeholder="最高"><span class="fl-unit">元</span></div>
+          <div class="fl"><span class="fl-label">涨跌幅</span><input class="fl-in num" id="f_chgPctMin" type="number" placeholder="最低"><span class="fl-tilde">~</span><input class="fl-in num" id="f_chgPctMax" type="number" placeholder="最高"><span class="fl-unit">%</span></div>
+          <div class="fl"><span class="fl-label">换手率</span><input class="fl-in num" id="f_turnoverMin" type="number" placeholder="最低"><span class="fl-tilde">~</span><input class="fl-in num" id="f_turnoverMax" type="number" placeholder="最高"><span class="fl-unit">%</span></div>
+          <div class="fl"><span class="fl-label">量比</span><input class="fl-in num" id="f_volRatioMin" type="number" placeholder="最低"><span class="fl-tilde">~</span><input class="fl-in num" id="f_volRatioMax" type="number" placeholder="最高"><span class="fl-unit"></span></div>
+          <div class="fl"><span class="fl-label">成交额</span><input class="fl-in num" id="f_amountMin" type="number" placeholder="最低"><span class="fl-tilde">~</span><input class="fl-in num" id="f_amountMax" type="number" placeholder="最高"><span class="fl-unit">亿</span></div>
+          <div class="fl"><span class="fl-label">振幅</span><input class="fl-in num" id="f_amplitudeMin" type="number" placeholder="最低"><span class="fl-tilde">~</span><input class="fl-in num" id="f_amplitudeMax" type="number" placeholder="最高"><span class="fl-unit">%</span></div>
+          <div class="fl"><span class="fl-label">总市值</span><input class="fl-in num" id="f_mktCapMin" type="number" placeholder="最低"><span class="fl-tilde">~</span><input class="fl-in num" id="f_mktCapMax" type="number" placeholder="最高"><span class="fl-unit">亿</span></div>
+          <div class="fl"><span class="fl-label">市盈率</span><input class="fl-in num" id="f_peMin" type="number" placeholder="最低"><span class="fl-tilde">~</span><input class="fl-in num" id="f_peMax" type="number" placeholder="最高"><span class="fl-unit">倍</span></div>
+          <div class="fl"><span class="fl-label">市净率</span><input class="fl-in num" id="f_pbMin" type="number" placeholder="最低"><span class="fl-tilde">~</span><input class="fl-in num" id="f_pbMax" type="number" placeholder="最高"><span class="fl-unit">倍</span></div>
+          <div class="fl"><span class="fl-label">60日涨幅</span><input class="fl-in num" id="f_chg60Min" type="number" placeholder="最低"><span class="fl-tilde">~</span><input class="fl-in num" id="f_chg60Max" type="number" placeholder="最高"><span class="fl-unit">%</span></div>
+          <div class="fl"><span class="fl-label">主力净流入</span><input class="fl-in num" id="f_mainNetMin" type="number" placeholder="不低于"><span class="fl-unit">万元</span></div>
+        </div>
+
+        <div class="scr-actions">
+          <button id="btnRun" class="btn primary">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="m5 3 14 9-14 9V3Z"/></svg>
+            开始选股
+          </button>
+          <button id="btnDeep" class="btn">深度技术校验 Top30</button>
+          <button id="btnReset" class="btn">重置条件</button>
+          <button id="btnExport" class="btn">导出 CSV</button>
+
+          <label class="switch" title="只保留沪深主板（60x / 00x），散户无需开通额外权限">
+            <input type="checkbox" id="sw_main" checked><span class="switch-track"></span>仅主板
+          </label>
+          <label class="switch"><input type="checkbox" id="sw_st" checked><span class="switch-track"></span>排除ST</label>
+          <label class="switch"><input type="checkbox" id="sw_susp" checked><span class="switch-track"></span>排除停牌</label>
+
+          <div class="progress" id="scrProgress" style="display:none"><div class="progress-fill" id="scrProgressFill" style="width:0"></div></div>
+          <span id="scrHint" style="font-size:11.5px;color:var(--text-3)"></span>
+        </div>
+      </div>
+
+      <div class="scr-result" id="scrResult">
+        <div class="empty-state">
+          <div class="big">⌕</div>
+          <div>选择一个策略模板，或自定义条件后点击「开始选股」</div>
+          <div style="margin-top:6px;font-size:11.5px">全市场沪深主板实时扫描，支持技术面深度校验与 CSV 导出</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<script src="assets/js/vendor/echarts.min.js"></script>
+<script>
+  // ECharts 本地文件缺失时回退 CDN
+  if (typeof echarts === 'undefined') {
+    document.write('<script src="https://cdn.staticfile.org/echarts/5.5.1/echarts.min.js"><\/script>');
+  }
+</script>
+<script src="assets/js/util.js"></script>
+<script src="assets/js/api.js"></script>
+<script src="assets/js/mock_stocks.js"></script>
+<script src="assets/js/mock.js"></script>
+<script src="assets/js/indicators.js"></script>
+<script src="assets/js/charts.js"></script>
+<script src="assets/js/screener.js"></script>
+<script src="assets/js/app.js"></script>
+</body>
+</html>
