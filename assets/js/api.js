@@ -99,7 +99,10 @@
   }
 
   function getUniverseQtCodes() {
-    return getUniverse().map(function (s) { return secidToQt(s.secid); }).filter(Boolean);
+    return getUniverse().map(function (s) {
+      if (!s || !s.code) return null;
+      return (s.market === 1 ? 'sh' : 'sz') + s.code;
+    }).filter(Boolean);
   }
 
   /* ============ normalize：腾讯 ~ 分割字符串 → 统一快照 ============ */
