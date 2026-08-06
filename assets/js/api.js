@@ -92,12 +92,14 @@
 
   // secid "1.600519" → 腾讯 "sh600519"
   function secidToQt(secid) {
+    if (!secid || typeof secid !== 'string') return null;
     var p = secid.split('.');
+    if (!p || p.length < 2) return null;
     return (p[0] === '1' ? 'sh' : 'sz') + p[1];
   }
 
   function getUniverseQtCodes() {
-    return getUniverse().map(function (s) { return secidToQt(s.secid); });
+    return getUniverse().map(function (s) { return secidToQt(s.secid); }).filter(Boolean);
   }
 
   /* ============ normalize：腾讯 ~ 分割字符串 → 统一快照 ============ */
@@ -260,7 +262,8 @@
    */
   API.fetchByCodes = async function (secids) {
     if (!secids || !secids.length) return [];
-    var codes = secids.map(secidToQt);
+    var codes = secids.map(secidToQt).filter(Boolean);
+    if (!codes.length) return [];
     return await batchQtQuote(codes);
   };
 
@@ -285,7 +288,9 @@
         throw new Error('Empty K-line response');
       }
       return resp.data.klines.map(function (line) {
+        if (!line || typeof line !== 'string') return null;
         var f = line.split(',');
+        if (!f || f.length < 7) return null;
         return {
           date:   f[0],
           open:   Number(f[1]),
@@ -295,7 +300,7 @@
           volume: Number(f[5]),
           amount: Number(f[6])
         };
-      });
+      }).filter(Boolean);
     } catch (e) {
       API.lastError = 'K-line fetch failed: ' + e.message;
       throw e;
@@ -323,9 +328,11 @@
       if (rawTrends.length === 0) throw new Error('Empty trends data');
 
       var rows = rawTrends.map(function (line) {
+        if (!line || typeof line !== 'string') return null;
         var f = line.split(',');
+        if (!f || f.length < 4) return null;
         return { time: f[0], close: Number(f[1]), avg: 0, volume: Number(f[2]), amount: Number(f[3]) };
-      });
+      }).filter(Boolean);
 
       var cumVol = 0, cumAmt = 0;
       rows.forEach(function (r) {
@@ -347,6 +354,7 @@
    */
   API.fetchSnapshot = async function (secid) {
     var qtCode = secidToQt(secid);
+    if (!qtCode) throw new Error('Invalid secid: ' + secid);
     try {
       var raw = await qtQuote([qtCode]);
       var s = normalizeQt(qtCode, raw[qtCode]);
