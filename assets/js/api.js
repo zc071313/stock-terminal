@@ -1,7 +1,7 @@
 /* ============================================================
-   api.js — 实时行情数据层（东方财富 push2.eastmoney.com 全源）
-   数据源：东方财富（行情报价 / K线 / 分时），全 HTTPS，适配 GitHub Pages
-   协议：JSONP，全 HTTPS
+   api.js — 实时行情数据层（data/quotes.json 静态源）
+   行情数据由 GitHub Actions 每 30s 从东方财富抓取并写入 data/quotes.json
+   前端直接 fetch 本地 JSON（同域无跨域），K线/分时仍走东方财富 JSONP
    ============================================================ */
 (function (global) {
   'use strict';
@@ -9,18 +9,54 @@
   var API = { mode: 'connecting', lastError: '' };
 
   /* ============ 常量 ============ */
-  var EM_QUOTE = 'https://push2.eastmoney.com/api/qt/stock/get';
-  var EM_KLINE = 'https://push2.eastmoney.com/api/qt/stock/kline/get';
-  var EM_TREND = 'https://push2.eastmoney.com/api/qt/stock/trends2/get';
-  var EM_UT    = 'fa5fd1943c7b386f172d6893dbf28df9';
+  var QUOTES_URL     = 'data/quotes.json';
+  var QUOTES_MAX_AGE = 120;  // 超过 120 秒未更新 → 降级 mock
 
-  // 东方财富行情字段（用于 stock/get API）
-  var EM_QUOTE_FIELDS = 'f43,f44,f45,f46,f47,f48,f50,f57,f58,f59,f60,f116,f117,f162,f167,f168,f169,f170,f171,f172,f173';
+  var EM_KLINE  = 'https://push2.eastmoney.com/api/qt/stock/kline/get';
+  var EM_TREND  = 'https://push2.eastmoney.com/api/qt/stock/trends2/get';
+  var EM_UT     = 'fa5fd1943c7b386f172d6893dbf28df9';
 
   API.FS_MAIN = { type: 'main', desc: '沪深主板' };
   API.FS_ALL  = { type: 'all',  desc: '全市场' };
 
-  /* ============ JSONP ============ */
+  /* ============ 行情缓存 ============ */
+  var quotesCache = null;       // { updated, total, list, indexes }
+  var quotesFetching = false;
+  var quotesPromise = null;
+
+  /**
+   * loadQuotesCache — 加载 data/quotes.json
+   * 带缓存：同一次页面生命周期内只请求一次 JSON 文件
+   */
+  function loadQuotesCache() {
+    if (quotesCache) return Promise.resolve(quotesCache);
+    if (quotesFetching && quotesPromise) return quotesPromise;
+
+    quotesFetching = true;
+    quotesPromise = fetch(QUOTES_URL + '?v=' + Date.now())
+      .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      })
+      .then(function (data) {
+        if (data && data.list && Array.isArray(data.list)) {
+          quotesCache = data;
+          return data;
+        }
+        throw new Error('Invalid quotes.json structure');
+      })
+      .catch(function (e) {
+        API.lastError = 'Failed to load quotes.json: ' + e.message;
+        throw e;
+      })
+      .finally(function () {
+        quotesFetching = false;
+      });
+
+    return quotesPromise;
+  }
+
+  /* ============ JSONP（K线/分时用） ============ */
   function jsonp(url, timeout, cbParam) {
     timeout = timeout || 15000;
     cbParam = cbParam || 'cb';
@@ -46,174 +82,49 @@
     });
   }
 
-  /* ============ 东方财富单股行情 ============ */
-  /**
-   * emQuote — 单只股票行情（东方财富 JSONP）
-   * secid 格式："1.600519"（市场.代码）
-   * 返回东方财富原始 data 对象，失败返回 null
-   */
-  function emQuote(secid, timeout) {
-    timeout = timeout || 12000;
-    var url = EM_QUOTE + '?secid=' + secid + '&fields=' + EM_QUOTE_FIELDS + '&ut=' + EM_UT;
-    return jsonp(url, timeout).then(function (resp) {
-      if (!resp || !resp.data) return null;
-      return resp.data;
-    }).catch(function () {
-      return null;
-    });
-  }
-
-  /**
-   * emQuoteBatch — 并行批量行情请求
-   * secids: secid 数组
-   * concurrency: 并发上限（默认 30）
-   * 返回快照数组（跳过失败的）
-   */
-  async function emQuoteBatch(secids, concurrency) {
-    concurrency = concurrency || 30;
-    var results = [];
-    for (var i = 0; i < secids.length; i += concurrency) {
-      var batch = secids.slice(i, i + concurrency);
-      var promises = batch.map(function (sid) { return emQuote(sid); });
-      var batchResults = await Promise.all(promises);
-      for (var j = 0; j < batchResults.length; j++) {
-        if (batchResults[j]) results.push(batchResults[j]);
-      }
-    }
-    return results;
-  }
-
-  /* ============ 代码转换 ============ */
-  function getUniverse() {
-    return (typeof MOCK_STOCKS !== 'undefined' && Array.isArray(MOCK_STOCKS)) ? MOCK_STOCKS : [];
-  }
-
-  function getUniverseSecids() {
-    return getUniverse().map(function (s) {
-      if (!s || !s.code || s.market == null) return null;
-      return s.market + '.' + s.code;
-    }).filter(Boolean);
-  }
-
-  /* ============ normalize：东方财富字段 → 统一快照 ============ */
-  /**
-   * 东方财富 stock/get 字段映射（值均来自 API 原始返回）：
-   *   f43: 最新价,     f44: 最高,       f45: 最低,       f46: 今开
-   *   f47: 成交量(手),  f48: 成交额(元)
-   *   f57: 代码,       f58: 名称,       f59: 市场标识
-   *   f60: 昨收
-   *   f116: 总市值(元), f117: 流通市值(元)
-   *   f162: PE(TTM),   f167: PB,        f168: 换手率
-   *   f169: 涨跌额(元), f170: 涨跌幅(%),  f173: 量比
-   *
-   * 价格类字段 (f43/f44/f45/f46/f60/f169) 需要 /100
-   * 比例类字段 (f170/f162/f167/f168) 需要 /100
-   * 涨跌停 = preClose * 1.1 / preClose * 0.9（计算值）
-   */
-  function normalizeEm(d) {
-    if (!d || !d.f57 || !d.f43) return null;
-
-    var code   = d.f57;
-    var market = String(d.f57).length === 6 && (String(d.f57).charAt(0) === '6' || String(d.f57).charAt(0) === '9') ? 1 : 0;
-    // f59: 2=沪, 但用代码前缀更可靠
-    if (typeof d.f59 === 'number') {
-      market = d.f59 === 2 ? 1 : d.f59 === 1 ? 0 : market;
-    }
-    var secid = market + '.' + code;
-
-    var price    = (d.f43 != null) ? d.f43 / 100 : null;
-    var preClose = (d.f60 != null) ? d.f60 / 100 : null;
-    if (!price || price <= 0) return null;
-
-    var high = (d.f44 != null) ? d.f44 / 100 : null;
-    var low  = (d.f45 != null) ? d.f45 / 100 : null;
-    var open = (d.f46 != null) ? d.f46 / 100 : null;
-
-    return {
-      code: code, name: d.f58, market: market, secid: secid,
-      price: price, open: open, preClose: preClose,
-      high: high, low: low,
-      chg:     (d.f169 != null) ? d.f169 / 100 : null,
-      chgPct:  (d.f170 != null) ? d.f170 / 100 : null,
-      volume:  (d.f47  != null) ? d.f47 * 100 : 0,       // 手 → 股
-      amount:  (d.f48  != null) ? d.f48 : 0,              // 已是元
-      amplitude: (high != null && low != null && preClose && preClose > 0)
-                  ? +(((high - low) / preClose) * 100).toFixed(2) : null,
-      turnover: (d.f168 != null) ? +(d.f168 / 100).toFixed(2) : null,
-      pe:       (d.f162 != null) ? +(d.f162 / 100).toFixed(2) : null,
-      pb:       (d.f167 != null) ? +(d.f167 / 100).toFixed(2) : null,
-      volRatio: (d.f173 != null) ? d.f173 : null,
-      mktCap:   (d.f116 != null) ? d.f116 : null,         // 已是元
-      floatCap: (d.f117 != null) ? d.f117 : null,
-      // 买卖五档：东方财富 stock/get 不返回盘口，留空
-      bids: [],
-      asks: [],
-      // 涨跌停：计算值
-      limitUp:   preClose ? +(preClose * 1.1).toFixed(2) : null,
-      limitDown: preClose ? +(preClose * 0.9).toFixed(2) : null,
-      chg60: null, chgYtd: null, mainNet: null, peTtm: null, speed: null,
-      _source: 'em'
-    };
-  }
-
-  /* ============ 批量拉取辅助 ============ */
-  async function batchEmToSnapshots(secids, onBatch) {
-    var all = [];
-    var total = secids.length;
-    var concurrency = 30;
-    for (var i = 0; i < secids.length; i += concurrency) {
-      var batch = secids.slice(i, i + concurrency);
-      try {
-        var promises = batch.map(function (sid) { return emQuote(sid); });
-        var rawList = await Promise.all(promises);
-        for (var j = 0; j < rawList.length; j++) {
-          var s = normalizeEm(rawList[j]);
-          if (s) all.push(s);
-        }
-      } catch (e) { /* 单批失败跳过 */ }
-      if (onBatch) {
-        onBatch({ list: all, total: total }, Math.min(i + concurrency, total), total);
-      }
-    }
-    return all;
-  }
-
   /* ============ API 方法 ============ */
 
   /**
-   * probe — 连通性探测（东方财富 push2.eastmoney.com）
-   * 探测上证指数（1.000001），3 次重试，失败回退 mock
+   * probe — 检查 quotes.json 是否存在且未过期
+   * 过期阈值：QUOTES_MAX_AGE 秒（默认 120 秒）
+   * 成功 → mode='live'，失败/过期 → mode='mock'
    */
   API.probe = async function () {
-    var intervals = [800, 1200, 2000];
-    for (var i = 0; i < 3; i++) {
-      try {
-        var url = EM_QUOTE + '?secid=1.000001&fields=f43&ut=' + EM_UT;
-        var resp = await jsonp(url, 10000);
-        if (resp && resp.data && resp.data.f43 != null) {
+    try {
+      var data = await loadQuotesCache();
+      if (data && typeof data.updated === 'number') {
+        var now = Math.floor(Date.now() / 1000);
+        var age = now - data.updated;
+        if (age <= QUOTES_MAX_AGE) {
           API.mode = 'live';
           API.dataSource = 'em';
           return true;
         }
-      } catch (e) {
-        if (i < 2) await sleep(intervals[i]);
+        API.mode = 'mock';
+        API.dataSource = 'mock';
+        API.lastError = 'Quotes data expired (age=' + age + 's, max=' + QUOTES_MAX_AGE + 's)';
+        return false;
       }
+    } catch (e) {
+      // fall through to mock
     }
     API.mode = 'mock';
     API.dataSource = 'mock';
-    API.lastError = 'EastMoney push2.eastmoney.com unreachable';
+    API.lastError = 'quotes.json unavailable or invalid';
     return false;
   };
 
   /**
-   * fetchAll — 渐进式拉取全量股票
+   * fetchAll — 读取全量行情快照（不区分主板/全市场，返回全部）
    */
   API.fetchAll = async function (fs, onProgress, onBatch) {
-    var secids = getUniverseSecids();
-    if (!secids.length) throw new Error('No stock codes');
-
-    var all = await batchEmToSnapshots(secids, onBatch || onProgress);
-    return { total: all.length, list: all };
+    var data = await loadQuotesCache();
+    var list = data.list || [];
+    var cb = onBatch || onProgress;
+    if (cb) {
+      cb({ list: list, total: list.length }, list.length, list.length);
+    }
+    return { total: list.length, list: list };
   };
 
   /**
@@ -226,11 +137,8 @@
     var fid = opt.fid || 'f3';
     var po  = opt.po  != null ? opt.po : 1;
 
-    var secids = getUniverseSecids();
-    if (!secids.length) throw new Error('No stock codes');
-
-    var rawList = await emQuoteBatch(secids, 30);
-    var all = rawList.map(normalizeEm).filter(Boolean);
+    var data = await loadQuotesCache();
+    var list = (data.list || []).slice();
 
     var keyMap = {
       'f3': 'chgPct', 'f6': 'amount', 'f8': 'turnover',
@@ -238,30 +146,32 @@
     };
     var sortKey = keyMap[fid] || 'chgPct';
 
-    all.sort(function (a, b) {
+    list.sort(function (a, b) {
       var va = a[sortKey] != null ? a[sortKey] : -Infinity;
       var vb = b[sortKey] != null ? b[sortKey] : -Infinity;
       return po === 1 ? vb - va : va - vb;
     });
 
-    var total = all.length;
+    var total = list.length;
     var start = pn * pz;
-    var page = all.slice(start, start + pz);
+    var page = list.slice(start, start + pz);
 
     return { total: total, list: page };
   };
 
   /**
-   * fetchByCodes — 按 secid 数组批量查询（自选刷新）
+   * fetchByCodes — 按 secid 数组查询（自选刷新）
    */
   API.fetchByCodes = async function (secids) {
     if (!secids || !secids.length) return [];
-    var rawList = await emQuoteBatch(secids, secids.length > 30 ? 30 : secids.length);
-    return rawList.map(normalizeEm).filter(Boolean);
+    var data = await loadQuotesCache();
+    var set = Object.create(null);
+    for (var i = 0; i < secids.length; i++) { set[secids[i]] = true; }
+    return (data.list || []).filter(function (s) { return set[s.secid]; });
   };
 
   /**
-   * fetchKline — K线（东方财富）
+   * fetchKline — K线（东方财富 JSONP，不变）
    * 日线 klt=101 / 周线 102 / 月线 103
    */
   API.fetchKline = async function (secid, klt, fqt, lmt) {
@@ -301,7 +211,7 @@
   };
 
   /**
-   * fetchTrends — 分时图（东方财富）
+   * fetchTrends — 分时图（东方财富 JSONP，不变）
    */
   API.fetchTrends = async function (secid, ndays) {
     ndays = ndays || 1;
@@ -346,66 +256,38 @@
    */
   API.fetchSnapshot = async function (secid) {
     if (!secid) throw new Error('Invalid secid');
-    try {
-      var d = await emQuote(secid, 12000);
-      if (!d) throw new Error('No snapshot data');
-      var s = normalizeEm(d);
-      if (!s) throw new Error('Failed to normalize snapshot');
-      return {
-        code: s.code, name: s.name, market: s.market, secid: s.secid,
-        price: s.price, open: s.open, preClose: s.preClose,
-        high: s.high, low: s.low,
-        chg: s.chg, chgPct: s.chgPct,
-        volume: s.volume, amount: s.amount,
-        turnover: s.turnover, amplitude: s.amplitude,
-        pe: s.pe, pb: s.pb, volRatio: s.volRatio,
-        mktCap: s.mktCap, floatCap: s.floatCap,
-        bids: s.bids, asks: s.asks,
-        limitUp: s.limitUp, limitDown: s.limitDown,
-        chg60: null, chgYtd: null, mainNet: null, peTtm: null, speed: null,
-        avg: null,
-        time: new Date().toTimeString().slice(0, 8),
-        _source: 'em'
-      };
-    } catch (e) {
-      API.lastError = 'Snapshot fetch failed: ' + e.message;
-      throw e;
+    var data = await loadQuotesCache();
+    var snap = null;
+    var list = data.list || [];
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].secid === secid) { snap = list[i]; break; }
     }
+    if (!snap) throw new Error('Snapshot not found: ' + secid);
+    return {
+      code: snap.code, name: snap.name, market: snap.market, secid: snap.secid,
+      price: snap.price, open: snap.open, preClose: snap.preClose,
+      high: snap.high, low: snap.low,
+      chg: snap.chg, chgPct: snap.chgPct,
+      volume: snap.volume, amount: snap.amount,
+      turnover: snap.turnover, amplitude: snap.amplitude,
+      pe: snap.pe, pb: snap.pb, volRatio: snap.volRatio,
+      mktCap: snap.mktCap, floatCap: snap.floatCap,
+      bids: snap.bids || [], asks: snap.asks || [],
+      limitUp: snap.limitUp, limitDown: snap.limitDown,
+      chg60: null, chgYtd: null, mainNet: null, peTtm: null, speed: null,
+      avg: null,
+      time: new Date().toTimeString().slice(0, 8),
+      _source: 'em'
+    };
   };
 
   /**
    * fetchIndex — 三大指数 + 沪深300
-   * 东方财富指数 secid：1.000001(上证), 0.399001(深证), 0.399006(创业板), 1.000300(沪深300)
    */
   API.fetchIndex = async function () {
-    var idxSecids = ['1.000001', '0.399001', '0.399006', '1.000300'];
-    var idxNames  = { '1.000001': '上证指数', '0.399001': '深证成指', '0.399006': '创业板指', '1.000300': '沪深300' };
-
-    try {
-      var promises = idxSecids.map(function (sid) { return emQuote(sid, 8000); });
-      var rawList = await Promise.all(promises);
-      var results = [];
-      for (var i = 0; i < rawList.length; i++) {
-        var d = rawList[i];
-        if (!d) continue;
-        results.push({
-          name:    d.f58 || idxNames[idxSecids[i]] || idxSecids[i],
-          price:   (d.f43 != null) ? d.f43 / 100 : null,
-          chg:     (d.f169 != null) ? d.f169 / 100 : 0,
-          chgPct:  (d.f170 != null) ? d.f170 / 100 : 0,
-          volume:  (d.f47  != null) ? d.f47 : 0,
-          amount:  (d.f48  != null) ? d.f48 : 0
-        });
-      }
-      return results;
-    } catch (e) {
-      API.lastError = 'Index fetch failed: ' + e.message;
-      throw e;
-    }
+    var data = await loadQuotesCache();
+    return (data.indexes || []).slice();
   };
-
-  /* ============ 工具函数 ============ */
-  function sleep(ms) { return new Promise(function (r) { return setTimeout(r, ms); }); }
 
   global.API = API;
 })(window);

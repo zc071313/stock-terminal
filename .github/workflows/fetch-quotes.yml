@@ -1,0 +1,41 @@
+name: Fetch Stock Quotes
+
+on:
+  schedule:
+    # 每 30 秒运行一次（GitHub 实际最小间隔为 5 分钟）
+    - cron: '* * * * *'
+  workflow_dispatch:
+
+# 同一时间只允许一个实例运行，避免并发写入冲突
+concurrency:
+  group: fetch-quotes
+  cancel-in-progress: false
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Python dependencies
+        run: pip install requests
+
+      - name: Fetch quotes from EastMoney
+        run: python scripts/fetch_quotes.py
+
+      - name: Commit and push if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/quotes.json
+          if git diff --staged --quiet; then
+            echo "No changes to quotes.json"
+          else
+            git commit -m "auto: update quotes [skip ci]"
+            git push
+          fi
