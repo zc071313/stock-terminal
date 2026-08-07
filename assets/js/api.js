@@ -10,6 +10,7 @@
 
   /* ============ 常量 ============ */
   var QT_BASE   = 'https://qt.gtimg.cn/q=';
+  var SINA_BASE = 'https://hq.sinajs.cn/list=';
   var EM_KLINE  = 'https://push2.eastmoney.com/api/qt/stock/kline/get';
   var EM_TREND  = 'https://push2.eastmoney.com/api/qt/stock/trends2/get';
   var EM_UT     = 'fa5fd1943c7b386f172d6893dbf28df9';
@@ -191,24 +192,66 @@
   /* ============ API 方法 ============ */
 
   /**
-   * probe — 连通性探测
-   * 用腾讯 qt.gtimg.cn 请求上证指数（始终有数据），2 次重试
+   * 新浪行情连通性探测（script 注入，非标准 JSONP）
+   * 探测 sh000001（上证指数），返回 true/false
    */
-  API.probe = async function (attempts) {
-    attempts = attempts || 2;
-    for (var i = 0; i < attempts; i++) {
+  function sinaProbe() {
+    return new Promise(function (resolve) {
+      var script = document.createElement('script');
+      var timer = setTimeout(function () { script.remove(); resolve(false); }, 10000);
+      script.src = SINA_BASE + 'sh000001';
+      script.charset = 'gbk';
+      script.onload = function () {
+        clearTimeout(timer);
+        script.remove();
+        var raw = window['hq_str_sh000001'];
+        delete window['hq_str_sh000001'];
+        resolve(!!(raw && raw !== ''));
+      };
+      script.onerror = function () {
+        clearTimeout(timer);
+        script.remove();
+        resolve(false);
+      };
+      document.head.appendChild(script);
+    });
+  }
+
+  /**
+   * probe — 连通性探测（双源：腾讯主 + 新浪备）
+   * 先探测腾讯 qt.gtimg.cn（3 次重试，间隔递增），失败则探测新浪，
+   * 都失败才回退 mock。确保切换股票/周期时拉取最新行情。
+   */
+  API.probe = async function () {
+    // 阶段 1：腾讯 qt.gtimg.cn（3 次重试，间隔 800/1200/2000ms）
+    var intervals = [800, 1200, 2000];
+    for (var i = 0; i < 3; i++) {
       try {
         var raw = await qtQuote(['sh000001']);
         if (raw && raw.sh000001 && raw.sh000001 !== '') {
           API.mode = 'live';
+          API.dataSource = 'qt';
           return true;
         }
       } catch (e) {
-        if (i < attempts - 1) await sleep(800);
+        if (i < 2) await sleep(intervals[i]);
       }
     }
+
+    // 阶段 2：新浪 hq.sinajs.cn 备选探测
+    try {
+      var sinaOk = await sinaProbe();
+      if (sinaOk) {
+        API.mode = 'live';
+        API.dataSource = 'qt';   // 新浪仅用于连通性判断，行情数据仍走腾讯主源
+        API.lastError = 'Tencent qt unreachable, but Sina hq.sinajs.cn is reachable';
+        return true;
+      }
+    } catch (e) { /* 静默 */ }
+
     API.mode = 'mock';
-    API.lastError = 'Tencent qt.gtimg.cn unreachable';
+    API.dataSource = 'mock';
+    API.lastError = 'Both Tencent qt.gtimg.cn and Sina hq.sinajs.cn unreachable';
     return false;
   };
 
